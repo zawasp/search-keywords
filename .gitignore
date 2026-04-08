@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+.gsc-token.json
+gsc-oauth-client.json
+client_secret*.json
+*.pem

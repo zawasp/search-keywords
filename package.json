@@ -1,0 +1,20 @@
+{
+  "name": "search-keywords",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Long-tail search query export from Google Search Console and Bing Webmaster",
+  "packageManager": "pnpm@10.33.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "long-tail": "node gsc-long-tail.mjs",
+    "list-properties": "node gsc-long-tail.mjs --list-properties",
+    "help": "node gsc-long-tail.mjs --help"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "googleapis": "^171.4.0"
+  }
+}
