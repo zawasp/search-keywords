@@ -2,20 +2,20 @@
   "name": "search-keywords",
   "version": "2.0.0",
   "private": true,
-  "description": "GSC/Bing CLI: long-tail queries, sitemap index status, multi-property export",
+  "description": "Search Console / Bing CLI: long-tail queries, sitemap index status, multi-property export",
   "packageManager": "pnpm@11.4.0",
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "auth": "node gsc-login.mjs",
-    "long-tail": "node gsc-long-tail.mjs",
-    "index-status": "node gsc-sitemap-index-status.mjs",
-    "list-properties": "node gsc-long-tail.mjs --list-properties",
-    "help": "node gsc-long-tail.mjs --help",
-    "help:auth": "node gsc-login.mjs --help",
-    "help:index-status": "node gsc-sitemap-index-status.mjs --help"
+    "auth": "node auth.mjs",
+    "long-tail": "node long-tail.mjs",
+    "index-status": "node index-status.mjs",
+    "list-properties": "node long-tail.mjs --list-properties",
+    "help": "node long-tail.mjs --help",
+    "help:auth": "node auth.mjs --help",
+    "help:index-status": "node index-status.mjs --help"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

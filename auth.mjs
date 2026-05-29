@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { config } from "dotenv";
 import { google } from "googleapis";
-import { authenticateGoogle, TOKEN_PATH } from "./lib/gsc-auth.mjs";
+import { authenticateGoogle, TOKEN_PATH } from "./lib/google-auth.mjs";
 
 const projectRoot = process.cwd();
 config({ path: path.join(projectRoot, ".env") });
@@ -14,7 +14,7 @@ function printHelp() {
 
 Usage:
   pnpm run auth [-- --force]
-  node gsc-login.mjs [--force]
+  node auth.mjs [--force]
 
 Options:
   --force, -f  Delete any saved token and sign in again

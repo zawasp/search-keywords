@@ -3,8 +3,8 @@
  * Fetch URLs from a sitemap and list those not indexed in Google
  * (via Search Console URL Inspection API).
  *
- * Prerequisites: same Google OAuth setup as gsc-long-tail.mjs
- * (pnpm run auth, .gsc-token.json, lib/gsc-auth.mjs, etc.).
+ * Prerequisites: same Google OAuth setup as long-tail.mjs
+ * (pnpm run auth, .google-token.json, lib/google-auth.mjs, etc.).
  *
  * Quota: ~2,000 URL Inspection calls per property per day, ~600/minute.
  * There is no batch inspect endpoint — parallel requests are used instead
@@ -27,11 +27,11 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { google } from "googleapis";
 import { config } from "dotenv";
-import { withAuthorizedGoogleClient } from "./lib/gsc-auth.mjs";
+import { withAuthorizedGoogleClient } from "./lib/google-auth.mjs";
 import {
   defaultIndexStatusCachePath,
   indexStatusExportBaseName,
-} from "./lib/gsc-export-names.mjs";
+} from "./lib/export-names.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = process.cwd();
@@ -42,7 +42,7 @@ const DEFAULT_CONCURRENCY = 8;
 const DEFAULT_DELAY_MS = 0;
 const DEFAULT_CACHE_MAX_AGE_DAYS = 7;
 const MAX_RETRIES = 4;
-const EXPORT_DIR = path.join(__dirname, "gsc-exports");
+const EXPORT_DIR = path.join(__dirname, "exports");
 
 function cliArgs() {
   return process.argv.slice(2).filter((a) => a !== "--");
@@ -62,7 +62,7 @@ function sleep(ms) {
 /** @param {string | undefined} site GSC property URL */
 function resolveSitemapUrl(site, explicit) {
   if (explicit) return explicit;
-  const fromEnv = process.env.GSC_SITEMAP_URL;
+  const fromEnv = process.env.GOOGLE_SITEMAP_URL || process.env.GSC_SITEMAP_URL;
   if (fromEnv) return fromEnv;
   if (site && /^https?:\/\//i.test(site)) {
     const base = site.endsWith("/") ? site : `${site}/`;
@@ -183,25 +183,25 @@ function parseCli() {
   });
 
   if (values.help) {
-    console.log(`Usage: node gsc-sitemap-index-status.mjs [options]
+    console.log(`Usage: node index-status.mjs [options]
        or: pnpm run index-status -- [options]
 
 Fetches all URLs from the sitemap, calls GSC URL Inspection for each, and
 writes URLs that are not indexed.
 
 Options:
-  --site <url>           GSC property (or GSC_SITE_URL). URL-prefix needs trailing /.
-  --sitemap <url>        Sitemap or sitemap index URL (or GSC_SITEMAP_URL).
+  --site <url>           Google property (or GOOGLE_SITE_URL). URL-prefix needs trailing /.
+  --sitemap <url>        Sitemap or sitemap index URL (or GOOGLE_SITEMAP_URL).
                          For URL-prefix properties, defaults to <site>sitemap-index.xml.
-                         Required for sc-domain: properties unless GSC_SITEMAP_URL is set.
+                         Required for sc-domain: properties unless GOOGLE_SITEMAP_URL is set.
   --out <file>           Output path (overrides --export-dated).
-  --export-dated         Dated file under ./gsc-exports/ (default on when --out omitted).
-  --export-dir <dir>     Export directory (default ./gsc-exports).
+  --export-dated         Dated file under ./exports/ (default on when --out omitted).
+  --export-dir <dir>     Export directory (default ./exports).
   --format txt|csv       txt = one URL per line; csv includes verdict and coverage.
   --limit <n>            Inspect at most N URLs (for testing).
   --concurrency <n>      Parallel inspections in flight (default ${DEFAULT_CONCURRENCY}; max ~600/min).
   --delay-ms <n>         Extra pause before each API call (default ${DEFAULT_DELAY_MS}; use with --concurrency 1).
-  --cache-file <path>    JSONL cache per site (default gsc-exports/sitemap-index-inspection-cache-<site>.jsonl).
+  --cache-file <path>    JSONL cache per site (default exports/sitemap-index-inspection-cache-<site>.jsonl).
   --skip-cached          Reuse recent cache hits instead of calling the API (default on).
   --no-skip-cached       Re-inspect every URL (same as --refresh).
   --cache-max-age-days <n>  Max cache age when --skip-cached (default ${DEFAULT_CACHE_MAX_AGE_DAYS}).
@@ -226,16 +226,16 @@ Auth:
     process.exit(0);
   }
 
-  const site = values.site || process.env.GSC_SITE_URL;
+  const site = values.site || process.env.GOOGLE_SITE_URL || process.env.GSC_SITE_URL;
   if (!site) {
-    console.error("Missing --site or GSC_SITE_URL.");
+    console.error("Missing --site or GOOGLE_SITE_URL.");
     process.exit(1);
   }
 
   const sitemap = resolveSitemapUrl(site, values.sitemap);
   if (!sitemap) {
     console.error(
-      "Missing --sitemap or GSC_SITEMAP_URL (required for sc-domain: properties; URL-prefix sites default to sitemap-index.xml).",
+      "Missing --sitemap or GOOGLE_SITEMAP_URL (required for sc-domain: properties; URL-prefix sites default to sitemap-index.xml).",
     );
     process.exit(1);
   }

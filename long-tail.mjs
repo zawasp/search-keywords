@@ -35,27 +35,27 @@
  *    - Default loopback: http://127.0.0.1:39393/
  *    - In Google Cloud Console, edit the Desktop client and add that exact URI
  *      under “Authorized redirect URIs” if your client type requires it.
- *    - To use another port: export GSC_OAUTH_PORT=<port> and add
+ *    - To use another port: export GOOGLE_OAUTH_PORT=<port> and add
  *      http://127.0.0.1:<port>/ in the console the same way.
  *
  * 6) Place the client secret JSON where this script can find it (first match wins)
- *    - Set GSC_OAUTH_CLIENT_JSON to the absolute path, OR
- *    - Save as gsc-oauth-client.json in the project root, OR
+ *    - Set GOOGLE_OAUTH_CLIENT_JSON to the absolute path, OR
+ *    - Save as google-oauth-client.json in the project root, OR
  *    - Drop the downloaded JSON in the project root named like client_secret_....json
  *      (if several exist, the newest file by mtime is used).
  *
  * 7) Install deps and sign in from this project root
  *    - pnpm install
- *    - pnpm run auth   (or: node gsc-login.mjs)
+ *    - pnpm run auth   (or: node auth.mjs)
  *    - Open the printed URL, sign in, approve access.
- *    - After success, tokens are saved to .gsc-token.json (refresh token
+ *    - After success, tokens are saved to .google-token.json (refresh token
  *      for later runs without a browser, until revoked or expired per Google rules).
  *    - Expired tokens are deleted automatically; you are prompted to sign in again.
  *
  * 8) Target site / property URL
  *    - Use the exact property string Search Console expects, e.g.:
  *        https://example.com/   or   sc-domain:example.com
- *    - Pass --site <url> or set GSC_SITE_URL in .env / .env.local (loaded from cwd).
+ *    - Pass --site <url> or set GOOGLE_SITE_URL in .env / .env.local (loaded from cwd).
  *    - Or pass --all-properties to query every property your account can access.
  *    - List what your account can access: --list-properties
  *
@@ -81,15 +81,19 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { google } from "googleapis";
 import { config } from "dotenv";
-import { withAuthorizedGoogleClient } from "./lib/gsc-auth.mjs";
-import { longTailExportBaseName } from "./lib/gsc-export-names.mjs";
+import { withAuthorizedGoogleClient } from "./lib/google-auth.mjs";
+import { longTailExportBaseName } from "./lib/export-names.mjs";
+import {
+  fetchBingQueryStatsRows,
+  fetchBingSiteUrls,
+  fetchBingUserSites,
+} from "./lib/bing-api.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = process.cwd();
 config({ path: path.join(projectRoot, ".env") });
 config({ path: path.join(projectRoot, ".env.local") });
 const ROW_LIMIT = 25000;
-const BING_API_BASE = "https://ssl.bing.com/webmaster/api.svc/json";
 
 function cliArgs() {
   return process.argv.slice(2).filter((a) => a !== "--");
@@ -159,14 +163,14 @@ function parseCli() {
   });
 
   if (values.help) {
-    console.log(`Usage: node gsc-long-tail.mjs [options]
+    console.log(`Usage: node long-tail.mjs [options]
        or: pnpm run long-tail -- [options]
 
 Options:
   --source <provider>    google|bing|both (default google).
   --list-properties      List properties available for selected provider(s).
   --all-properties       Query every accessible property (ignores --site / --bing-site).
-  --site <url>           Google property URL (or GSC_SITE_URL). Required unless --all-properties.
+  --site <url>           Google property URL (or GOOGLE_SITE_URL). Required unless --all-properties.
   --bing-site <url>      Bing site URL (or BING_SITE_URL). Required unless --all-properties.
   --bing-api-key <key>   Bing Webmaster API key (or BING_WEBMASTER_API_KEY).
   --days <n>             Lookback window in days (Google only). Default 90. Ignored if both --from and --to are set.
@@ -179,8 +183,8 @@ Options:
   --exclude <substring>  Drop queries containing substring (repeatable).
   --format table|json|csv
   --out <file>           Write output to file.
-  --export-dated         Write under ./gsc-exports/ (see Export filenames below).
-  --export-dir <dir>     Directory for --export-dated (default ./gsc-exports).
+  --export-dated         Write under ./exports/ (see Export filenames below).
+  --export-dir <dir>     Directory for --export-dated (default ./exports).
   --limit <n>            Max rows after filtering/sort (omit or 0 = no cap).
   -h, --help             Show this help.
 
@@ -190,11 +194,11 @@ Auth:
 
 Export filenames (--export-dated):
   <kind>-<site-slug>-<from>_to_<to>.<ext>
-  kind:   gsc-long-tail | bing-long-tail | search-long-tail (depends on --source)
+  kind:   google-long-tail | bing-long-tail | search-long-tail (depends on --source)
   slug:   property id from --site / --bing-site (e.g. sc-domain:example.com → example-com)
           use "all" for --all-properties, or when --source both with different sites
   Example:
-    gsc-long-tail-example-com-2026-02-27_to_2026-05-28.csv
+    google-long-tail-example-com-2026-02-27_to_2026-05-28.csv
     search-long-tail-all-2026-02-27_to_2026-05-28.csv
 
 Output columns:
@@ -218,13 +222,13 @@ Notes:
 
   const listProperties = Boolean(values["list-properties"]);
   const allProperties = Boolean(values["all-properties"]);
-  const site = values.site || process.env.GSC_SITE_URL;
+  const site = values.site || process.env.GOOGLE_SITE_URL || process.env.GSC_SITE_URL;
   const bingSite = values["bing-site"] || process.env.BING_SITE_URL || site;
   const needsGoogle = !listProperties && (source === "google" || source === "both");
   const needsBing = !listProperties && (source === "bing" || source === "both");
 
   if (needsGoogle && !allProperties && !site) {
-    console.error("Missing --site or GSC_SITE_URL for Google source (or use --all-properties).");
+    console.error("Missing --site or GOOGLE_SITE_URL for Google source (or use --all-properties).");
     process.exit(1);
   }
   if (needsBing && !allProperties && !bingSite) {
@@ -305,9 +309,19 @@ async function fetchGoogleSiteUrls(webmasters) {
   return (res.data.siteEntry || []).map((s) => s.siteUrl).filter(Boolean);
 }
 
-async function fetchBingSiteUrls(apiKey) {
-  const sites = await fetchBingUserSites(apiKey);
-  return sites.map((s) => s?.Url).filter(Boolean);
+
+function requireBingApiKey(opts) {
+  const key = opts.bingApiKey || process.env.BING_WEBMASTER_API_KEY;
+  if (key) return key;
+  console.error(`Missing Bing API key.
+
+Set one of:
+  - --bing-api-key <key>
+  - BING_WEBMASTER_API_KEY=<key>
+
+Generate it in Bing Webmaster Tools -> Settings -> API Access.
+`);
+  process.exit(1);
 }
 
 async function fetchAllGoogleQueryRows(webmasters, siteUrl, startDate, endDate) {
@@ -333,56 +347,18 @@ async function fetchAllGoogleQueryRows(webmasters, siteUrl, startDate, endDate) 
   return rows;
 }
 
-function parseMsDate(raw) {
+function parseBingDate(raw) {
   if (typeof raw !== "string") return null;
+  const iso = Date.parse(raw);
+  if (Number.isFinite(iso)) return new Date(iso);
   const m = raw.match(/\/Date\((\d+)(?:[+-]\d{4})?\)\//);
   if (!m) return null;
   const ms = Number(m[1]);
   return Number.isFinite(ms) ? new Date(ms) : null;
 }
 
-async function fetchBingJson(method, params, apiKey) {
-  const url = new URL(`${BING_API_BASE}/${method}`);
-  url.searchParams.set("apikey", apiKey);
-  for (const [key, value] of Object.entries(params || {})) {
-    if (value == null) continue;
-    url.searchParams.set(key, String(value));
-  }
-  const res = await fetch(url);
-  const body = await res.text();
-  let parsed = null;
-  try {
-    parsed = body ? JSON.parse(body) : null;
-  } catch {
-    // keep raw body for fallback
-  }
-  if (!res.ok) {
-    const message = parsed?.Message || body || `Bing API ${method} failed`;
-    throw new Error(`Bing API ${method} failed: ${message}`);
-  }
-  if (parsed?.ErrorCode) {
-    throw new Error(`Bing API ${method} failed: ${parsed.Message || "unknown error"}`);
-  }
-  return parsed;
-}
-
-function requireBingApiKey(opts) {
-  const key = opts.bingApiKey || process.env.BING_WEBMASTER_API_KEY;
-  if (key) return key;
-  console.error(`Missing Bing API key.
-
-Set one of:
-  - --bing-api-key <key>
-  - BING_WEBMASTER_API_KEY=<key>
-
-Generate it in Bing Webmaster Tools -> Settings -> API Access.
-`);
-  process.exit(1);
-}
-
 async function fetchBingQueryRows(siteUrl, apiKey) {
-  const payload = await fetchBingJson("GetQueryStats", { siteUrl }, apiKey);
-  const rows = Array.isArray(payload?.d) ? payload.d : [];
+  const rows = await fetchBingQueryStatsRows(siteUrl, apiKey);
   const byQuery = new Map();
   for (const row of rows) {
     const query = String(row?.Query || "").trim();
@@ -390,7 +366,7 @@ async function fetchBingQueryRows(siteUrl, apiKey) {
     const clicks = Number(row?.Clicks || 0) || 0;
     const impressions = Number(row?.Impressions || 0) || 0;
     const rawPos = Number(row?.AvgImpressionPosition ?? row?.AvgClickPosition ?? 0) || 0;
-    const date = parseMsDate(row?.Date);
+    const date = parseBingDate(row?.Date);
 
     let agg = byQuery.get(query);
     if (!agg) {
@@ -415,11 +391,6 @@ async function fetchBingQueryRows(siteUrl, apiKey) {
     ctr: item.impressions > 0 ? item.clicks / item.impressions : 0,
     position: item.weight > 0 ? item.weightedPos / item.weight : 0,
   }));
-}
-
-async function fetchBingUserSites(apiKey) {
-  const payload = await fetchBingJson("GetUserSites", {}, apiKey);
-  return Array.isArray(payload?.d) ? payload.d : [];
 }
 
 function applyFilters(row, opts) {
@@ -658,7 +629,7 @@ Use:
     output = formatTable(sliced, columns);
   }
 
-  const exportDirDefault = path.join(__dirname, "gsc-exports");
+  const exportDirDefault = path.join(__dirname, "exports");
   const exportBaseName = longTailExportBaseName(opts);
 
   let outPath = opts.out;

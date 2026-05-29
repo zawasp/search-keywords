@@ -2,8 +2,11 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.google-token.json
 .gsc-token.json
+google-oauth-client.json
 gsc-oauth-client.json
 client_secret*.json
+exports/
 gsc-exports/
 *.pem
