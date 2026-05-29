@@ -1,20 +1,24 @@
 {
   "name": "search-keywords",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Long-tail search query export from Google Search Console and Bing Webmaster",
-  "packageManager": "pnpm@10.33.0",
+  "description": "GSC/Bing CLI: long-tail queries, sitemap index status, multi-property export",
+  "packageManager": "pnpm@11.4.0",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=24"
   },
   "scripts": {
+    "auth": "node gsc-login.mjs",
     "long-tail": "node gsc-long-tail.mjs",
+    "index-status": "node gsc-sitemap-index-status.mjs",
     "list-properties": "node gsc-long-tail.mjs --list-properties",
-    "help": "node gsc-long-tail.mjs --help"
+    "help": "node gsc-long-tail.mjs --help",
+    "help:auth": "node gsc-login.mjs --help",
+    "help:index-status": "node gsc-sitemap-index-status.mjs --help"
   },
   "dependencies": {
-    "dotenv": "^17.4.1",
-    "googleapis": "^171.4.0"
+    "dotenv": "^17.4.2",
+    "googleapis": "^173.0.0"
   }
 }

@@ -1,187 +1,270 @@
 # search-keywords
 
-Export and filter long-tail search queries from [Google Search Console](https://search.google.com/search-console) and/or [Bing Webmaster Tools](https://www.bing.com/webmasters). The tool pulls query performance data, applies filters (word count, impressions, position, exclusions), and prints or writes `table`, `json`, or `csv`.
+**Version 2.0.0** — see [CHANGELOG.md](CHANGELOG.md).
+
+CLI tools for [Google Search Console](https://search.google.com/search-console) and [Bing Webmaster Tools](https://www.bing.com/webmasters):
+
+- **Long-tail queries** — filter and export search terms (Google date ranges, Bing aggregate stats)
+- **Index status** — sitemap URLs not indexed in Google (URL Inspection API)
+
+Shared auth: **`lib/gsc-auth.mjs`** (OAuth loopback, service account, `.gsc-token.json`).
+
+| Script | `pnpm` command | Purpose |
+|--------|----------------|---------|
+| `gsc-login.mjs` | `auth` | Google OAuth sign-in |
+| `gsc-long-tail.mjs` | `long-tail` | Long-tail query export |
+| `gsc-sitemap-index-status.mjs` | `index-status` | Sitemap URLs not indexed |
 
 ## Requirements
 
-- **Node.js** 18 or newer
-- **pnpm** 10 (see `packageManager` in `package.json`)
+- **Node.js** 24+
+- **pnpm** 11 (`packageManager` in `package.json`)
 
-## Install
-
-From the project root:
+## Quick start
 
 ```bash
 pnpm install
+pnpm run auth
+pnpm run list-properties -- --source google
 ```
 
-Configuration can live in a **`.env`** or **`.env.local`** file in the project root (same directory you run commands from). Variables are loaded automatically by the script.
+Put config in **`.env`** or **`.env.local`** at the project root (loaded automatically).
 
 ---
 
 ## Google Search Console setup
 
-1. **Google Cloud project** — [Google Cloud Console](https://console.cloud.google.com/) — create or select a project.
+1. **Google Cloud project** — [Google Cloud Console](https://console.cloud.google.com/).
 
-2. **Enable the API** — APIs & Services → Library → search for **Google Search Console API** → Enable.
+2. **Enable the API** — APIs & Services → Library → **Google Search Console API** → Enable.
 
-3. **OAuth consent screen** — APIs & Services → OAuth consent screen. For personal use, **External** with yourself as a test user is typical.
+3. **OAuth consent screen** — APIs & Services → OAuth consent screen (**External** + test user is fine for personal use).
 
-4. **OAuth client (browser sign-in)** — Credentials → Create credentials → **OAuth client ID** → application type **Desktop app**.  
-   Add this **Authorized redirect URI** (must match exactly):
+4. **OAuth client** — Credentials → **OAuth client ID** → **Desktop app**.  
+   Authorized redirect URI (exact):
 
    ```text
    http://127.0.0.1:39393/
    ```
 
-   If you use a custom port, set `GSC_OAUTH_PORT` and add `http://127.0.0.1:<port>/` in the console.
+   Custom port: set `GSC_OAUTH_PORT` and add `http://127.0.0.1:<port>/`.
 
-5. **Client secret JSON** — Download the OAuth client JSON. The script picks the first path that exists:
+5. **Client secret JSON** — first match wins:
 
-   | Priority | How |
-   |----------|-----|
-   | 1 | `GSC_OAUTH_CLIENT_JSON` — absolute path to the JSON file |
-   | 2 | `gsc-oauth-client.json` next to `gsc-long-tail.mjs` |
-   | 3 | Any `client_secret*.json` in the script directory (newest file wins if several exist) |
+   | Priority | Path |
+   |----------|------|
+   | 1 | `GSC_OAUTH_CLIENT_JSON` (absolute path) |
+   | 2 | `gsc-oauth-client.json` in project root |
+   | 3 | Newest `client_secret*.json` in project root |
 
-6. **First run** — Run `pnpm run list-properties` (or the main script with `--list-properties`). Open the printed URL, sign in, approve access. Tokens are saved to **`.gsc-token.json`** beside the script for later runs without a browser.
+6. **Sign in** — `pnpm run auth` (or `pnpm run auth -- --force` to replace a bad token).  
+   Token file: **`.gsc-token.json`**. Expired tokens are cleared automatically; scripts prompt you to sign in again.
 
-7. **Site / property** — Use the exact URL Search Console expects, for example `https://example.com/` or `sc-domain:example.com`. Pass **`--site`** or set **`GSC_SITE_URL`** in `.env`.
+7. **Property** — `https://example.com/` or `sc-domain:example.com` via **`--site`** or **`GSC_SITE_URL`**.  
+   **`--all-properties`** queries every property your account can access (no `--site`).
 
-**Scope used:** `https://www.googleapis.com/auth/webmasters.readonly`
+8. **Sitemap** (index-status only) — **`--sitemap`** or **`GSC_SITEMAP_URL`**.  
+   URL-prefix sites default to `{origin}/sitemap-index.xml`.  
+   `sc-domain:` properties need an explicit sitemap URL.
 
-### Service account (no browser)
+**Scope:** `https://www.googleapis.com/auth/webmasters.readonly`
 
-1. Create a service account, download its JSON key.
-2. `export GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/key.json`
-3. In Search Console, add that service account email as a user with access to the property.
+### Service account
+
+1. Download a service account JSON key.
+2. `export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`
+3. Add the service account email in Search Console for the property.
+
+No browser sign-in; use `pnpm run auth` only to verify access if you use OAuth elsewhere.
 
 ---
 
 ## Bing Webmaster (optional)
 
-1. In Bing Webmaster Tools → **Settings** → **API Access**, create an API key.
-2. Pass **`--bing-api-key`** or set **`BING_WEBMASTER_API_KEY`**.
-3. Pass **`--bing-site`** or set **`BING_SITE_URL`** (if omitted when using Bing alone, the script still requires a site URL for Bing).
+1. Bing Webmaster → **Settings** → **API Access** → API key.
+2. **`--bing-api-key`** or **`BING_WEBMASTER_API_KEY`**.
+3. **`--bing-site`** or **`BING_SITE_URL`** (or **`--all-properties`** for every Bing site).
 
-When using **`--source both`**, Bing falls back to **`--site` / `GSC_SITE_URL`** for `bing-site` if `BING_SITE_URL` is not set.
+With **`--source both`**, Bing uses **`GSC_SITE_URL`** when **`BING_SITE_URL`** is unset.
 
 ---
 
-## Environment variables (reference)
+## Export filenames
+
+All dated exports go under **`gsc-exports/`** (gitignored). The **site slug** is derived from the property URL:
+
+| Property | Slug |
+|----------|------|
+| `sc-domain:example.com` | `example-com` |
+| `https://www.example.com/` | `example-com` |
+
+Use **`all`** when **`--all-properties`**, or **`--source both`** with different Google and Bing sites.
+
+### Long-tail (`--export-dated`)
+
+```text
+<kind>-<slug>-<from>_to_<to>.<ext>
+```
+
+| `--source` | `kind` prefix |
+|------------|----------------|
+| `google` | `gsc-long-tail` |
+| `bing` | `bing-long-tail` |
+| `both` | `search-long-tail` |
+
+Examples:
+
+```text
+gsc-long-tail-example-com-2026-02-27_to_2026-05-28.csv
+search-long-tail-all-2026-02-27_to_2026-05-28.csv
+```
+
+### Index status (`--export-dated`, default on)
+
+```text
+sitemap-not-indexed-<slug>-YYYY-MM-DD.<ext>
+sitemap-index-inspection-cache-<slug>.jsonl   # default --cache-file per property
+```
+
+Example: `sitemap-not-indexed-example-com-2026-05-29.csv`
+
+---
+
+## Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `GSC_SITE_URL` | Default Google property URL |
-| `GSC_OAUTH_CLIENT_JSON` | Absolute path to Google OAuth client JSON |
-| `GSC_OAUTH_PORT` | Loopback port for OAuth (default `39393`) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Service account key path (alternative to OAuth) |
-| `BING_WEBMASTER_API_KEY` | Bing Webmaster API key |
+| `GSC_SITE_URL` | Default Google property |
+| `GSC_SITEMAP_URL` | Sitemap URL for `index-status` |
+| `GSC_OAUTH_CLIENT_JSON` | Path to OAuth client JSON |
+| `GSC_OAUTH_PORT` | OAuth loopback port (default `39393`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Service account key |
+| `BING_WEBMASTER_API_KEY` | Bing API key |
 | `BING_SITE_URL` | Bing site URL |
 
 ---
 
 ## npm scripts
 
-Run from the project root. **Extra CLI flags must come after `--`** so they are passed to the script, not to pnpm.
+Pass CLI flags after **`--`**:
 
-| Command | What it runs |
-|---------|----------------|
-| `pnpm run long-tail -- [options]` | Main export (default source: Google) |
-| `pnpm run list-properties -- [options]` | List Google and/or Bing properties/sites |
-| `pnpm run help` | Print CLI help |
-
-Direct invocation (no pnpm):
+| Command | Description |
+|---------|-------------|
+| `pnpm run auth [-- --force]` | Google OAuth sign-in |
+| `pnpm run long-tail -- [options]` | Query export |
+| `pnpm run index-status -- [options]` | Sitemap index check |
+| `pnpm run list-properties -- [options]` | List GSC/Bing properties |
+| `pnpm run help` | Long-tail help |
+| `pnpm run help:auth` | Auth help |
+| `pnpm run help:index-status` | Index-status help |
 
 ```bash
+node gsc-login.mjs [--force]
 node gsc-long-tail.mjs [options]
+node gsc-sitemap-index-status.mjs [options]
 ```
 
 ---
 
-## CLI options
+## CLI: auth
 
 | Option | Description |
 |--------|-------------|
-| `--source <provider>` | `google` \| `bing` \| `both` (default: `google`) |
-| `--list-properties` | List properties for the selected provider(s); does not export queries |
-| `--site <url>` | Google property URL (or use `GSC_SITE_URL`) |
-| `--bing-site <url>` | Bing site URL (or `BING_SITE_URL`; with `both`, can follow `GSC_SITE_URL`) |
-| `--bing-api-key <key>` | Bing API key (or `BING_WEBMASTER_API_KEY`) |
-| `--days <n>` | Lookback window in days for **Google** only (default: `90`) |
-| `--min-words <n>` | Minimum words in the query string (default: `4`) |
-| `--min-impressions <n>` | Minimum impressions (default: `1`) |
-| `--min-position <n>` | Minimum average position (optional) |
-| `--max-position <n>` | Maximum average position (optional) |
-| `--exclude <substring>` | Drop queries containing this substring; repeatable |
-| `--format <fmt>` | `table`, `json`, or `csv` (default: `table`) |
-| `--out <file>` | Write output to this file |
-| `--export-dated` | Write under `gsc-exports/` (or `--export-dir`) with a date in the filename |
-| `--export-dir <dir>` | Directory for `--export-dated` (default: `./gsc-exports` relative to the script) |
-| `--limit <n>` | Max rows after filter/sort (default: `200`) |
-| `-h`, `--help` | Show built-in help |
+| `--force`, `-f` | Delete saved token and sign in again |
+| `-h`, `--help` | Help |
 
-**Notes:**
+---
 
-- **`--out`** wins over **`--export-dated`** if both are set (dated export is ignored).
-- With **`--source both`**, the table/JSON/CSV includes a **`source`** column (`google` / `bing`).
-- Bing data is aggregated from the Webmaster API; behavior and date ranges differ from Google’s API.
+## CLI: long-tail
+
+| Option | Description |
+|--------|-------------|
+| `--source` | `google` \| `bing` \| `both` (default `google`) |
+| `--list-properties` | List properties; no export |
+| `--all-properties` | Every accessible property; adds `site` column |
+| `--site` | Google property (or `GSC_SITE_URL`) |
+| `--bing-site` | Bing site (or `BING_SITE_URL`) |
+| `--bing-api-key` | Bing key (or env) |
+| `--days` | Google lookback days (default `90`; ignored if `--from` + `--to`) |
+| `--from`, `--to` | Fixed GSC date window (`YYYY-MM-DD`) |
+| `--min-words` | Min query words (default `4`) |
+| `--min-impressions` | Min impressions (default `1`) |
+| `--min-position`, `--max-position` | Position filters |
+| `--exclude` | Drop queries containing substring (repeatable) |
+| `--format` | `table` \| `json` \| `csv` |
+| `--out` | Output file (overrides `--export-dated`) |
+| `--export-dated` | Write to `gsc-exports/` with site slug in filename |
+| `--export-dir` | Export directory (default `./gsc-exports`) |
+| `--limit` | Max rows (omit or `0` = no cap) |
+
+**Notes:** `--source both` adds a `source` column. Bing `GetQueryStats` is not date-filtered. Permission errors on individual properties are skipped when using `--all-properties`.
+
+---
+
+## CLI: index status
+
+| Option | Description |
+|--------|-------------|
+| `--site` | GSC property (or `GSC_SITE_URL`) |
+| `--sitemap` | Sitemap URL (or `GSC_SITEMAP_URL`) |
+| `--format` | `txt` \| `csv` |
+| `--out` | Output file |
+| `--export-dated` | Dated filename (default on) |
+| `--export-dir` | Default `./gsc-exports` |
+| `--limit` | Max URLs to inspect |
+| `--concurrency` | Parallel calls (default `8`) |
+| `--delay-ms` | Delay per API call |
+| `--cache-file` | Per-site JSONL cache |
+| `--skip-cached` | Reuse fresh cache (default on) |
+| `--cache-max-age-days` | Cache TTL (default `7`) |
+| `--refresh` | Re-inspect all URLs |
+| `-h`, `--help` | Help |
+
+**Quota:** ~2,000 URL Inspection calls per property per day. Use **`--refresh`** when results must match the GSC UI today.
 
 ---
 
 ## Examples
 
-List Google properties you can access:
-
 ```bash
+# Auth
+pnpm run auth
+pnpm run auth -- --force
+
+# List properties
 pnpm run list-properties -- --source google
-```
-
-List Bing sites (requires API key):
-
-```bash
 pnpm run list-properties -- --source bing --bing-api-key YOUR_KEY
-```
 
-Long-tail export for Google (site from env or flag):
-
-```bash
-pnpm run long-tail -- --site https://example.com/
-```
-
-Stricter long-tail: at least 5 words, top 50 by impressions, CSV to a file:
-
-```bash
+# Long-tail — single site, fixed window
 pnpm run long-tail -- \
-  --site https://example.com/ \
-  --min-words 5 \
-  --limit 50 \
-  --format csv \
-  --out queries.csv
-```
+  --site sc-domain:example.com \
+  --from 2026-02-27 --to 2026-05-28 \
+  --export-dated --format csv
 
-Dated export folder:
+# Long-tail — all Google properties
+pnpm run long-tail -- --all-properties --export-dated --format csv
 
-```bash
-pnpm run long-tail -- --site https://example.com/ --export-dated --format csv
-```
-
-Google + Bing together:
-
-```bash
+# Long-tail — Google + Bing, one site
 pnpm run long-tail -- \
   --source both \
   --site https://example.com/ \
-  --bing-api-key YOUR_KEY
+  --bing-api-key YOUR_KEY \
+  --export-dated
+
+# Index status — domain property
+pnpm run index-status -- \
+  --site sc-domain:example.com \
+  --sitemap https://example.com/sitemap-index.xml \
+  --refresh --format csv
+
+# Index status — URL-prefix (sitemap inferred)
+pnpm run index-status -- --site https://example.com/
 ```
 
 ---
 
-## Files to keep private
-
-These are gitignored or should stay local:
+## Private files (gitignored)
 
 - `.env`, `.env.local`
-- `.gsc-token.json` (OAuth refresh token)
-- `gsc-oauth-client.json`, `client_secret*.json`
-- Exported outputs (optional): add `gsc-exports/` to `.gitignore` if you do not want those files in version control
+- `.gsc-token.json`, `gsc-oauth-client.json`, `client_secret*.json`
+- `gsc-exports/`

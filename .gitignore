@@ -5,4 +5,5 @@ node_modules/
 .gsc-token.json
 gsc-oauth-client.json
 client_secret*.json
+gsc-exports/
 *.pem

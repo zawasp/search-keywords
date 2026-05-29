@@ -3,6 +3,11 @@
  * Pull search query data from Google Search Console and/or Bing Webmaster and
  * filter for long-tail candidates.
  *
+ * For apples-to-apples diffs between runs, pin the Google window with e.g.
+ *   --from 2026-01-18 --to 2026-04-18
+ * or anchor the end with --to 2026-04-18 --days 90 (same end date + same days).
+ * Bing rows from GetQueryStats are aggregated; this script does not filter by date.
+ *
  * =============================================================================
  * GOOGLE SEARCH CONSOLE API — SETUP (step by step)
  * =============================================================================
@@ -35,21 +40,23 @@
  *
  * 6) Place the client secret JSON where this script can find it (first match wins)
  *    - Set GSC_OAUTH_CLIENT_JSON to the absolute path, OR
- *    - Save as gsc-oauth-client.json next to this file, OR
- *    - Drop the downloaded JSON in this project directory named like client_secret_....json
+ *    - Save as gsc-oauth-client.json in the project root, OR
+ *    - Drop the downloaded JSON in the project root named like client_secret_....json
  *      (if several exist, the newest file by mtime is used).
  *
- * 7) Install deps and run from this project root
+ * 7) Install deps and sign in from this project root
  *    - pnpm install
- *    - pnpm run list-properties   (or: node gsc-long-tail.mjs --list-properties)
- *    - First Google run: a URL is printed; open it, sign in, approve access.
- *    - After success, tokens are saved to .gsc-token.json here (refresh token
+ *    - pnpm run auth   (or: node gsc-login.mjs)
+ *    - Open the printed URL, sign in, approve access.
+ *    - After success, tokens are saved to .gsc-token.json (refresh token
  *      for later runs without a browser, until revoked or expired per Google rules).
+ *    - Expired tokens are deleted automatically; you are prompted to sign in again.
  *
  * 8) Target site / property URL
  *    - Use the exact property string Search Console expects, e.g.:
  *        https://example.com/   or   sc-domain:example.com
  *    - Pass --site <url> or set GSC_SITE_URL in .env / .env.local (loaded from cwd).
+ *    - Or pass --all-properties to query every property your account can access.
  *    - List what your account can access: --list-properties
  *
  * 9) Alternative: service account (no browser)
@@ -65,23 +72,22 @@
  * =============================================================================
  * API key from Bing Webmaster Tools → Settings → API Access.
  * Pass --bing-api-key or set BING_WEBMASTER_API_KEY; site via --bing-site or BING_SITE_URL.
+ * Use --all-properties to query every Bing site from GetUserSites.
  */
 
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { google } from "googleapis";
 import { config } from "dotenv";
+import { withAuthorizedGoogleClient } from "./lib/gsc-auth.mjs";
+import { longTailExportBaseName } from "./lib/gsc-export-names.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = process.cwd();
 config({ path: path.join(projectRoot, ".env") });
 config({ path: path.join(projectRoot, ".env.local") });
-const SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"];
-const DEFAULT_OAUTH_PORT = 39393;
-const TOKEN_PATH = path.join(__dirname, ".gsc-token.json");
 const ROW_LIMIT = 25000;
 const BING_API_BASE = "https://ssl.bing.com/webmaster/api.svc/json";
 
@@ -90,11 +96,38 @@ function cliArgs() {
 }
 
 function ymd(d) {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** @param {string} s */
+function parseYmdLocal(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s).trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return dt;
 }
 
 function wordCount(q) {
   return q.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/** @param {string | undefined} raw */
+function parseOutputLimit(raw) {
+  if (raw == null || String(raw).trim() === "") return Infinity;
+  const n = Number(raw);
+  if (n === 0) return Infinity;
+  if (!Number.isFinite(n) || n < 1) {
+    console.error("Invalid --limit: use a positive integer, 0 for no cap, or omit for no cap.");
+    process.exit(1);
+  }
+  return Math.floor(n);
 }
 
 function parseCli() {
@@ -106,6 +139,8 @@ function parseCli() {
       "bing-site": { type: "string" },
       "bing-api-key": { type: "string" },
       days: { type: "string", default: "90" },
+      from: { type: "string" },
+      to: { type: "string" },
       "min-words": { type: "string", default: "4" },
       "min-impressions": { type: "string", default: "1" },
       "min-position": { type: "string" },
@@ -115,9 +150,10 @@ function parseCli() {
       out: { type: "string" },
       "export-dated": { type: "boolean" },
       "export-dir": { type: "string" },
-      limit: { type: "string", default: "200" },
+      limit: { type: "string" },
       help: { type: "boolean", short: "h" },
       "list-properties": { type: "boolean" },
+      "all-properties": { type: "boolean" },
     },
     allowPositionals: false,
   });
@@ -129,10 +165,13 @@ function parseCli() {
 Options:
   --source <provider>    google|bing|both (default google).
   --list-properties      List properties available for selected provider(s).
-  --site <url>           Google property URL (or GSC_SITE_URL).
-  --bing-site <url>      Bing site URL (or BING_SITE_URL).
+  --all-properties       Query every accessible property (ignores --site / --bing-site).
+  --site <url>           Google property URL (or GSC_SITE_URL). Required unless --all-properties.
+  --bing-site <url>      Bing site URL (or BING_SITE_URL). Required unless --all-properties.
   --bing-api-key <key>   Bing Webmaster API key (or BING_WEBMASTER_API_KEY).
-  --days <n>             Lookback window in days (Google only). Default 90.
+  --days <n>             Lookback window in days (Google only). Default 90. Ignored if both --from and --to are set.
+  --from <YYYY-MM-DD>    Start of Google Search Console date range (inclusive). Use with --to for fixed windows.
+  --to <YYYY-MM-DD>      End of GSC range (inclusive). With --from: exact window. Without --from: anchor end and go back --days.
   --min-words <n>        Minimum words in query (default 4).
   --min-impressions <n>  Minimum impressions (default 1).
   --min-position <n>     Minimum average position.
@@ -140,10 +179,33 @@ Options:
   --exclude <substring>  Drop queries containing substring (repeatable).
   --format table|json|csv
   --out <file>           Write output to file.
-  --export-dated         Write to gsc-exports/<source>-long-tail-YYYY-MM-DD.<ext>.
+  --export-dated         Write under ./gsc-exports/ (see Export filenames below).
   --export-dir <dir>     Directory for --export-dated (default ./gsc-exports).
-  --limit <n>            Max rows after filtering/sort (default 200).
+  --limit <n>            Max rows after filtering/sort (omit or 0 = no cap).
   -h, --help             Show this help.
+
+Auth:
+  Run pnpm run auth before the first Google export. Expired tokens are removed
+  automatically and you are prompted to sign in again (or: pnpm run auth -- --force).
+
+Export filenames (--export-dated):
+  <kind>-<site-slug>-<from>_to_<to>.<ext>
+  kind:   gsc-long-tail | bing-long-tail | search-long-tail (depends on --source)
+  slug:   property id from --site / --bing-site (e.g. sc-domain:example.com → example-com)
+          use "all" for --all-properties, or when --source both with different sites
+  Example:
+    gsc-long-tail-example-com-2026-02-27_to_2026-05-28.csv
+    search-long-tail-all-2026-02-27_to_2026-05-28.csv
+
+Output columns:
+  --source both                    adds source (google|bing)
+  --all-properties                 adds site (property URL)
+  --source both --all-properties   adds both source and site
+
+Notes:
+  --out wins over --export-dated.
+  --all-properties skips properties that fail with permission errors and continues.
+  Bing GetQueryStats is not date-filtered; use --from/--to only for Google.
 `);
     process.exit(0);
   }
@@ -155,27 +217,31 @@ Options:
   }
 
   const listProperties = Boolean(values["list-properties"]);
+  const allProperties = Boolean(values["all-properties"]);
   const site = values.site || process.env.GSC_SITE_URL;
   const bingSite = values["bing-site"] || process.env.BING_SITE_URL || site;
   const needsGoogle = !listProperties && (source === "google" || source === "both");
   const needsBing = !listProperties && (source === "bing" || source === "both");
 
-  if (needsGoogle && !site) {
-    console.error("Missing --site or GSC_SITE_URL for Google source.");
+  if (needsGoogle && !allProperties && !site) {
+    console.error("Missing --site or GSC_SITE_URL for Google source (or use --all-properties).");
     process.exit(1);
   }
-  if (needsBing && !bingSite) {
-    console.error("Missing --bing-site (or BING_SITE_URL) for Bing source.");
+  if (needsBing && !allProperties && !bingSite) {
+    console.error("Missing --bing-site (or BING_SITE_URL) for Bing source (or use --all-properties).");
     process.exit(1);
   }
 
   return {
     source,
     listProperties,
+    allProperties,
     site,
     bingSite,
     bingApiKey: values["bing-api-key"] || process.env.BING_WEBMASTER_API_KEY,
     days: Math.max(1, Number(values.days) || 90),
+    from: values.from ? String(values.from).trim() : undefined,
+    to: values.to ? String(values.to).trim() : undefined,
     minWords: Math.max(1, Number(values["min-words"]) || 4),
     minImpressions: Math.max(0, Number(values["min-impressions"]) || 1),
     minPosition: values["min-position"] != null ? Number(values["min-position"]) : undefined,
@@ -185,136 +251,63 @@ Options:
     out: values.out,
     exportDated: Boolean(values["export-dated"]),
     exportDir: values["export-dir"],
-    limit: Math.max(1, Number(values.limit) || 200),
+    limit: parseOutputLimit(values.limit),
   };
 }
 
-function discoverClientSecretJsonPath() {
-  let files = [];
-  try {
-    files = fs.readdirSync(__dirname);
-  } catch {
-    return null;
+/**
+ * Resolve Google Search Console [startDate, endDate] (inclusive calendar days, local timezone).
+ * @param {{ days: number; from?: string; to?: string }} opts
+ */
+function resolveGscDateRange(opts) {
+  const days = opts.days;
+  const fromRaw = opts.from;
+  const toRaw = opts.to;
+
+  const todayLocal = () => {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  };
+
+  if (fromRaw && toRaw) {
+    const start = parseYmdLocal(fromRaw);
+    const end = parseYmdLocal(toRaw);
+    if (!start) throw new Error(`Invalid --from "${fromRaw}" (expected YYYY-MM-DD).`);
+    if (!end) throw new Error(`Invalid --to "${toRaw}" (expected YYYY-MM-DD).`);
+    if (start > end) throw new Error("--from must be on or before --to.");
+    return { start, end, explicit: true };
   }
-  const matches = files.filter((f) => /^client_secret.*\.json$/i.test(f));
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return path.join(__dirname, matches[0]);
-  matches.sort(
-    (a, b) =>
-      fs.statSync(path.join(__dirname, b)).mtimeMs -
-      fs.statSync(path.join(__dirname, a)).mtimeMs,
-  );
-  return path.join(__dirname, matches[0]);
+
+  if (toRaw && !fromRaw) {
+    const end = parseYmdLocal(toRaw);
+    if (!end) throw new Error(`Invalid --to "${toRaw}" (expected YYYY-MM-DD).`);
+    const start = new Date(end);
+    start.setDate(start.getDate() - days);
+    return { start, end, explicit: false };
+  }
+
+  if (fromRaw && !toRaw) {
+    const start = parseYmdLocal(fromRaw);
+    if (!start) throw new Error(`Invalid --from "${fromRaw}" (expected YYYY-MM-DD).`);
+    const end = todayLocal();
+    if (start > end) throw new Error("--from must be on or before today when --to is omitted.");
+    return { start, end, explicit: false };
+  }
+
+  const end = todayLocal();
+  const start = new Date(end);
+  start.setDate(start.getDate() - days);
+  return { start, end, explicit: false };
 }
 
-function loadOAuthClientSecrets() {
-  const orderedPaths = [];
-  if (process.env.GSC_OAUTH_CLIENT_JSON) {
-    orderedPaths.push(process.env.GSC_OAUTH_CLIENT_JSON);
-  }
-  orderedPaths.push(path.join(__dirname, "gsc-oauth-client.json"));
-  const discovered = discoverClientSecretJsonPath();
-  if (discovered) orderedPaths.push(discovered);
-
-  const seen = new Set();
-  for (const p of orderedPaths) {
-    if (!p || seen.has(p)) continue;
-    seen.add(p);
-    if (!fs.existsSync(p)) continue;
-    try {
-      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-      const c = raw.installed || raw.web;
-      if (c?.client_id && c?.client_secret) return c;
-    } catch {
-      // keep searching
-    }
-  }
-  return null;
+async function fetchGoogleSiteUrls(webmasters) {
+  const res = await webmasters.sites.list({});
+  return (res.data.siteEntry || []).map((s) => s.siteUrl).filter(Boolean);
 }
 
-async function oauthLoopbackAuthorize(oauth2Client, port) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      try {
-        const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
-        const code = url.searchParams.get("code");
-        const err = url.searchParams.get("error");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        if (err) {
-          res.end(`<p>Authorization failed: ${err}</p>`);
-          server.close(() => reject(new Error(err)));
-          return;
-        }
-        if (!code) {
-          res.end("<p>No code in callback.</p>");
-          server.close(() => reject(new Error("No authorization code")));
-          return;
-        }
-        res.end("<p>Authorized. You can close this tab.</p>");
-        server.close(() => resolve(code));
-      } catch (e) {
-        server.close(() => reject(e));
-      }
-    });
-    server.listen(port, "127.0.0.1", () => {
-      const authUrl = oauth2Client.generateAuthUrl({
-        access_type: "offline",
-        prompt: "consent",
-        scope: SCOPES,
-      });
-      console.error(`Open this URL in a browser:\n${authUrl}\n`);
-    });
-    server.on("error", reject);
-  });
-}
-
-async function getAuthorizedClient() {
-  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (keyPath && fs.existsSync(keyPath)) {
-    const auth = new google.auth.GoogleAuth({ keyFile: keyPath, scopes: SCOPES });
-    return auth.getClient();
-  }
-
-  const secrets = loadOAuthClientSecrets();
-  if (!secrets) {
-    console.error(`No Google credentials found.
-
-OAuth (sign in with browser - recommended for local use):
-  - Google Cloud -> APIs & Services -> Credentials -> OAuth client ID -> type "Desktop app"
-  - Enable "Google Search Console API" for that project
-  - Add redirect URI: http://127.0.0.1:${DEFAULT_OAUTH_PORT}/
-  - Download the JSON and either:
-      - save as gsc-oauth-client.json next to gsc-long-tail.mjs, or
-      - drop client_secret....json in the same directory, or
-      - set GSC_OAUTH_CLIENT_JSON=/absolute/path/to/client_secret....json
-
-Service account (no browser):
-  - export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-  - add that service account email as user on the GSC property.
-`);
-    process.exit(1);
-  }
-
-  const port = Number(process.env.GSC_OAUTH_PORT) || DEFAULT_OAUTH_PORT;
-  const redirectUri = `http://127.0.0.1:${port}/`;
-  const oauth2Client = new google.auth.OAuth2(
-    secrets.client_id,
-    secrets.client_secret,
-    redirectUri,
-  );
-
-  if (fs.existsSync(TOKEN_PATH)) {
-    const t = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf8"));
-    oauth2Client.setCredentials(t);
-    return oauth2Client;
-  }
-
-  const code = await oauthLoopbackAuthorize(oauth2Client, port);
-  const { tokens } = await oauth2Client.getToken(code);
-  oauth2Client.setCredentials(tokens);
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf8");
-  console.error(`Saved refresh token to ${TOKEN_PATH}`);
-  return oauth2Client;
+async function fetchBingSiteUrls(apiKey) {
+  const sites = await fetchBingUserSites(apiKey);
+  return sites.map((s) => s?.Url).filter(Boolean);
 }
 
 async function fetchAllGoogleQueryRows(webmasters, siteUrl, startDate, endDate) {
@@ -456,6 +449,7 @@ function applyFilters(row, opts) {
 
   return {
     ...(row.source ? { source: row.source } : {}),
+    ...(row.site ? { site: row.site } : {}),
     query,
     words,
     impressions,
@@ -493,19 +487,20 @@ async function main() {
 
   if (opts.listProperties) {
     if (includeGoogle) {
-      const auth = await getAuthorizedClient();
-      const webmasters = google.webmasters({ version: "v3", auth });
-      const res = await webmasters.sites.list({});
-      const sites = res.data.siteEntry || [];
-      console.log("Google properties:");
-      if (sites.length === 0) {
-        console.log("(none)");
-      } else {
-        for (const s of sites) {
-          console.log(`${s.siteUrl}\t${s.permissionLevel || "?"}`);
+      await withAuthorizedGoogleClient(async (auth) => {
+        const webmasters = google.webmasters({ version: "v3", auth });
+        const res = await webmasters.sites.list({});
+        const sites = res.data.siteEntry || [];
+        console.log("Google properties:");
+        if (sites.length === 0) {
+          console.log("(none)");
+        } else {
+          for (const s of sites) {
+            console.log(`${s.siteUrl}\t${s.permissionLevel || "?"}`);
+          }
         }
-      }
-      console.log("");
+        console.log("");
+      });
     }
 
     if (includeBing) {
@@ -526,65 +521,129 @@ async function main() {
     return;
   }
 
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - opts.days);
+  let start;
+  let end;
+  let gscRangeExplicit = false;
+  try {
+    const r = resolveGscDateRange(opts);
+    start = r.start;
+    end = r.end;
+    gscRangeExplicit = r.explicit;
+  } catch (e) {
+    console.error(e.message || e);
+    process.exit(1);
+  }
+
+  if (gscRangeExplicit) {
+    console.error(`Note: --days (${opts.days}) is ignored when both --from and --to are set.`);
+  }
 
   const filtered = [];
 
   if (includeGoogle) {
-    const auth = await getAuthorizedClient();
-    const webmasters = google.webmasters({ version: "v3", auth });
-    console.error(
-      `Fetching Google queries for ${opts.site} (${ymd(start)} ... ${ymd(end)}) ...`,
-    );
-    let rawGoogle = [];
-    try {
-      rawGoogle = await fetchAllGoogleQueryRows(webmasters, opts.site, ymd(start), ymd(end));
-    } catch (err) {
-      const msg = apiErrorMessage(err);
-      if (/sufficient permission|not a verified owner|not part of this site/i.test(msg)) {
-        console.error(msg);
-        console.error(`
+    await withAuthorizedGoogleClient(async (auth) => {
+      const webmasters = google.webmasters({ version: "v3", auth });
+      const googleSites = opts.allProperties
+        ? await fetchGoogleSiteUrls(webmasters)
+        : [opts.site];
+
+      if (googleSites.length === 0) {
+        console.error("No Google properties found.");
+        return;
+      }
+
+      if (opts.allProperties) {
+        console.error(`Fetching Google queries for ${googleSites.length} propert${googleSites.length === 1 ? "y" : "ies"} ...`);
+      }
+
+      for (const siteUrl of googleSites) {
+        console.error(
+          `Fetching Google queries for ${siteUrl} (${ymd(start)} … ${ymd(end)}, inclusive) ...`,
+        );
+        let rawGoogle = [];
+        try {
+          rawGoogle = await fetchAllGoogleQueryRows(webmasters, siteUrl, ymd(start), ymd(end));
+        } catch (err) {
+          const msg = apiErrorMessage(err);
+          if (/sufficient permission|not a verified owner|not part of this site/i.test(msg)) {
+            if (opts.allProperties) {
+              console.error(`Skipped ${siteUrl}: ${msg}`);
+              continue;
+            }
+            console.error(msg);
+            console.error(`
 The --site string must match a Google Search Console property for your account.
 Use:
   pnpm run long-tail -- --source google --list-properties
+  pnpm run long-tail -- --all-properties
 `);
-        process.exit(1);
+            process.exit(1);
+          }
+          throw err;
+        }
+        console.error(`Fetched ${rawGoogle.length} query rows from Google for ${siteUrl}.`);
+        for (const row of rawGoogle) {
+          const enriched = {
+            ...row,
+            query: row.keys?.[0],
+            site: opts.allProperties ? siteUrl : undefined,
+            source: opts.source === "both" ? "google" : undefined,
+          };
+          const candidate = applyFilters(enriched, opts);
+          if (candidate) filtered.push(candidate);
+        }
       }
-      throw err;
-    }
-    console.error(`Fetched ${rawGoogle.length} query rows from Google.`);
-    for (const row of rawGoogle) {
-      const enriched = {
-        ...row,
-        query: row.keys?.[0],
-        source: opts.source === "both" ? "google" : undefined,
-      };
-      const candidate = applyFilters(enriched, opts);
-      if (candidate) filtered.push(candidate);
-    }
+    });
   }
 
   if (includeBing) {
     const apiKey = requireBingApiKey(opts);
-    console.error(`Fetching Bing queries for ${opts.bingSite} ...`);
-    const rawBing = await fetchBingQueryRows(opts.bingSite, apiKey);
-    console.error(`Fetched ${rawBing.length} aggregated query rows from Bing.`);
-    for (const row of rawBing) {
-      const enriched = opts.source === "both" ? { ...row, source: "bing" } : row;
-      const candidate = applyFilters(enriched, opts);
-      if (candidate) filtered.push(candidate);
+    const bingSites = opts.allProperties
+      ? await fetchBingSiteUrls(apiKey)
+      : [opts.bingSite];
+
+    if (bingSites.length === 0) {
+      console.error("No Bing sites found.");
+    } else {
+      if (opts.allProperties) {
+        console.error(`Fetching Bing queries for ${bingSites.length} site${bingSites.length === 1 ? "" : "s"} ...`);
+      }
+      if (includeGoogle) {
+        console.error(
+          `Note: Bing Webmaster GetQueryStats is not date-filtered in this script; compare Bing rows across runs with care.`,
+        );
+      }
+
+      for (const siteUrl of bingSites) {
+        console.error(`Fetching Bing queries for ${siteUrl} ...`);
+        let rawBing = [];
+        try {
+          rawBing = await fetchBingQueryRows(siteUrl, apiKey);
+        } catch (err) {
+          console.error(`Skipped ${siteUrl}: ${apiErrorMessage(err)}`);
+          continue;
+        }
+        console.error(`Fetched ${rawBing.length} aggregated query rows from Bing for ${siteUrl}.`);
+        for (const row of rawBing) {
+          const enriched = {
+            ...row,
+            site: opts.allProperties ? siteUrl : undefined,
+            source: opts.source === "both" ? "bing" : undefined,
+          };
+          const candidate = applyFilters(enriched, opts);
+          if (candidate) filtered.push(candidate);
+        }
+      }
+      console.error("Note: Bing AI/grounding query reporting is not available in the public Webmaster API.");
     }
-    console.error("Note: Bing AI/grounding query reporting is not available in the public Webmaster API.");
   }
 
   filtered.sort((a, b) => b.impressions - a.impressions);
   const sliced = filtered.slice(0, opts.limit);
-  const columns =
-    opts.source === "both"
-      ? ["source", "query", "words", "impressions", "clicks", "ctr", "position"]
-      : ["query", "words", "impressions", "clicks", "ctr", "position"];
+  const columns = [];
+  if (opts.source === "both") columns.push("source");
+  if (opts.allProperties) columns.push("site");
+  columns.push("query", "words", "impressions", "clicks", "ctr", "position");
 
   console.error(`Long-tail matches (after filters): ${filtered.length}. Showing ${sliced.length}.`);
 
@@ -600,15 +659,15 @@ Use:
   }
 
   const exportDirDefault = path.join(__dirname, "gsc-exports");
-  const exportBaseName =
-    opts.source === "google" ? "gsc-long-tail" : opts.source === "bing" ? "bing-long-tail" : "search-long-tail";
+  const exportBaseName = longTailExportBaseName(opts);
 
   let outPath = opts.out;
   if (!outPath && opts.exportDated) {
     const dir = opts.exportDir || exportDirDefault;
     const ext = opts.format === "json" ? "json" : opts.format === "csv" ? "csv" : "txt";
     fs.mkdirSync(dir, { recursive: true });
-    outPath = path.join(dir, `${exportBaseName}-${ymd(new Date())}.${ext}`);
+    const rangeSlug = `${ymd(start)}_to_${ymd(end)}`;
+    outPath = path.join(dir, `${exportBaseName}-${rangeSlug}.${ext}`);
   }
 
   if (opts.out && opts.exportDated) {
