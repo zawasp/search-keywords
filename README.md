@@ -244,6 +244,33 @@ node index-status.mjs [options]
 
 ---
 
+## CLI: indexing log (dedupe for Request indexing)
+
+Google ignores repeat "Request indexing" submissions, so each URL is requested **once per site**.
+History lives in one append-only TSV per Search Console property:
+
+```text
+data/indexing-submitted/<host>.tsv     # e.g. singlefax.com.tsv (www. dropped)
+timestamp<TAB>url<TAB>result<TAB>source
+```
+
+`data/` is tracked in git (unlike `exports/`, which is gitignored and gets cleaned), so the history survives.
+Matching ignores fragments, host case, `www.` and the trailing slash, so `/blog/x` and `/blog/x/` count as the same page.
+Only `INDEXING_REQUESTED` is logged; quota-exceeded, errors, already-indexed and unprocessed URLs never are.
+
+```bash
+# before a run: drop URLs already submitted (skipped ones are reported on stderr)
+pnpm run indexing-log -- filter --in exports/gsc-continue-queue-YYYY-MM-DD.txt --out queue-urls.txt
+# deliberate recrawl after a content refresh
+pnpm run indexing-log -- filter --force https://example.com/blog/refreshed-post   # alias: --resubmit
+# after each successful Request indexing (or import the whole run log afterwards)
+pnpm run indexing-log -- record https://example.com/blog/new-post
+pnpm run indexing-log -- import path/to/request-log.tsv
+pnpm run indexing-log -- list
+```
+
+`index-status` also prints how many of the not-indexed URLs were already submitted (export files unchanged).
+
 ## Examples
 
 ```bash

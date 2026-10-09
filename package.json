@@ -12,10 +12,12 @@
     "auth": "node auth.mjs",
     "long-tail": "node long-tail.mjs",
     "index-status": "node index-status.mjs",
+    "indexing-log": "node indexing-log.mjs",
     "list-properties": "node long-tail.mjs --list-properties",
     "help": "node long-tail.mjs --help",
     "help:auth": "node auth.mjs --help",
-    "help:index-status": "node index-status.mjs --help"
+    "help:index-status": "node index-status.mjs --help",
+    "help:indexing-log": "node indexing-log.mjs --help"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

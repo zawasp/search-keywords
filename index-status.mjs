@@ -28,6 +28,7 @@ import { parseArgs } from "node:util";
 import { google } from "googleapis";
 import { config } from "dotenv";
 import { withAuthorizedGoogleClient } from "./lib/google-auth.mjs";
+import { IndexingLog, logPathFor } from "./lib/indexing-log.mjs";
 import {
   defaultIndexStatusCachePath,
   indexStatusExportBaseName,
@@ -512,6 +513,20 @@ async function main() {
 
   console.error(`\nDone. ${notIndexed.length} not-indexed URL(s) written to ${outPath}`);
   console.error(`Cache: ${opts.cacheFile}`);
+
+  // Per-site dedupe log (data/indexing-submitted/<host>.tsv): info only, output files unchanged.
+  try {
+    const submittedLog = new IndexingLog();
+    const already = notIndexed.filter((r) => submittedLog.has(r.url)).length;
+    if (notIndexed.length) {
+      console.error(
+        `Already submitted for indexing: ${already}/${notIndexed.length} not-indexed URL(s) ` +
+          `(${logPathFor(notIndexed[0].url)}). Use \`pnpm run indexing-log -- filter --in <queue>\` before requesting.`,
+      );
+    }
+  } catch (err) {
+    console.error(`Indexing log check skipped: ${err.message || err}`);
+  }
   });
 }
 
