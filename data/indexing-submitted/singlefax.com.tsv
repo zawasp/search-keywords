@@ -34,3 +34,12 @@ timestamp	url	result	source
 2026-10-07T00:00:00+03:00	https://singlefax.com/online-fax	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-10-07/request-log.tsv
 2026-10-07T00:00:00+03:00	https://singlefax.com/file-3911	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-10-07/request-log.tsv
 2026-10-08T00:00:00+03:00	https://singlefax.com/fax/governors	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-10-08/request-log.tsv
+2026-10-09T06:26:32.403Z	https://singlefax.com/temporary-fax-number	INDEXING_REQUESTED	
+2026-10-09T06:26:32.590Z	https://singlefax.com/number-porting	INDEXING_REQUESTED	
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/congress/indiana	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/congress/minnesota	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/congress/new-york	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/congress/virgin-islands	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/governors/alabama	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/governors/california	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv
+2026-10-09T00:00:00+03:00	https://singlefax.com/fax/governors/arkansas	INDEXING_REQUESTED	import:exports/gsc-request-log-2026-10-09.tsv

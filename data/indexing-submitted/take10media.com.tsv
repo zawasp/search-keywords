@@ -9,3 +9,4 @@ timestamp	url	result	source
 2026-09-29T00:00:00+03:00	https://take10media.com/blog/samsung-vxt-smartify-commercial-displays-dooh-2026/	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-09-29/request-log.txt
 2026-10-05T00:00:00+03:00	https://take10media.com/blog/programmatic-dooh-dach-self-serve-germany-2026/	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-10-05/request-log.tsv
 2026-10-05T00:00:00+03:00	https://take10media.com/blog/perion-prn-in-store-retail-media-acquisition-2026/	INDEXING_REQUESTED	seed:box/workspace/gsc-indexing-2026-10-05/request-log.tsv
+2026-10-09T06:26:32.777Z	https://take10media.com/blog/dooh-attribution-without-device-ids/	INDEXING_REQUESTED	
